@@ -1,0 +1,117 @@
+import { describe, expect, it, vi } from "vitest";
+import {
+  getUserOperationHash,
+  type UserOperation,
+} from "viem/account-abstraction";
+import { signAndSubmit } from "./submit";
+
+const entryPointAddress = "0x0000000071727De22E5E9d8BAf0edAc6f37da032" as const;
+const chainId = 10143;
+const operation: UserOperation<"0.7"> = {
+  sender: "0x1111111111111111111111111111111111111111",
+  nonce: 0n,
+  callData: "0x",
+  callGasLimit: 100000n,
+  verificationGasLimit: 100000n,
+  preVerificationGas: 50000n,
+  maxFeePerGas: 1000000000n,
+  maxPriorityFeePerGas: 1000000000n,
+  signature: "0xdead",
+};
+const expectedHash = getUserOperationHash({
+  userOperation: operation,
+  entryPointAddress,
+  entryPointVersion: "0.7",
+  chainId,
+});
+
+describe("passkey submission boundary", () => {
+  it("does not broadcast when the tracking record cannot be persisted", async () => {
+    const broadcast = vi.fn();
+    await expect(
+      signAndSubmit({
+        operation,
+        chainId,
+        entryPointAddress,
+        sign: async () => "0xbeef",
+        broadcast,
+        onSigned: () => {
+          throw new Error("Storage unavailable");
+        },
+      }),
+    ).rejects.toThrow("Storage unavailable");
+    expect(broadcast).not.toHaveBeenCalled();
+  });
+  it("replaces the estimate signature and records the hash before broadcasting", async () => {
+    const order: string[] = [];
+    const result = await signAndSubmit({
+      operation,
+      chainId,
+      entryPointAddress,
+      sign: async () => {
+        order.push("device-confirmation");
+        return "0xbeef";
+      },
+      onSigned: (hash) => {
+        expect(hash).toBe(expectedHash);
+        order.push("persist-hash");
+      },
+      broadcast: async (signed) => {
+        expect(signed.signature).toBe("0xbeef");
+        order.push("broadcast");
+        return expectedHash;
+      },
+    });
+    expect(order).toEqual(["device-confirmation", "persist-hash", "broadcast"]);
+    expect(operation.signature).toBe("0xdead");
+    expect(result).toBe(expectedHash);
+  });
+  it("never persists or broadcasts after device rejection", async () => {
+    const broadcast = vi.fn(),
+      onSigned = vi.fn();
+    await expect(
+      signAndSubmit({
+        operation,
+        chainId,
+        entryPointAddress,
+        sign: async () => {
+          throw new Error("NotAllowedError");
+        },
+        broadcast,
+        onSigned,
+      }),
+    ).rejects.toThrow("NotAllowedError");
+    expect(broadcast).not.toHaveBeenCalled();
+    expect(onSigned).not.toHaveBeenCalled();
+  });
+  it("preserves the hash and never retries an ambiguous network failure", async () => {
+    const broadcast = vi.fn(async () => {
+        throw new Error("network timeout");
+      }),
+      onSigned = vi.fn();
+    await expect(
+      signAndSubmit({
+        operation,
+        chainId,
+        entryPointAddress,
+        sign: async () => "0xbeef",
+        broadcast,
+        onSigned,
+      }),
+    ).rejects.toThrow("do not resend");
+    expect(onSigned).toHaveBeenCalledWith(expectedHash);
+    expect(broadcast).toHaveBeenCalledTimes(1);
+  });
+  it("does not trust an unexpected hash returned by the provider", async () => {
+    await expect(
+      signAndSubmit({
+        operation,
+        chainId,
+        entryPointAddress,
+        sign: async () => "0xbeef",
+        onSigned: () => {},
+        broadcast: async () => "0x1234",
+      }),
+    ).rejects.toThrow("status unknown");
+  });
+});

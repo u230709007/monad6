@@ -1,0 +1,47 @@
+import { isAddress, isHex, type Hex } from "viem";
+
+export type Activity = {
+  id: string;
+  kind: "transfer" | "message";
+  at: number;
+  status: "pending" | "success" | "failed";
+  amount?: string;
+  to?: string;
+  userOpHash?: Hex;
+  txHash?: Hex;
+};
+const key = (address: string) => `mona:10143:activity:${address.toLowerCase()}`;
+export function readHistory(address: string): Activity[] {
+  try {
+    const parsed: unknown = JSON.parse(
+      localStorage.getItem(key(address)) || "[]",
+    );
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((x): x is Activity =>
+        Boolean(
+          x &&
+          typeof x.id === "string" &&
+          typeof x.at === "number" &&
+          ["transfer", "message"].includes(x.kind) &&
+          ["pending", "success", "failed"].includes(x.status) &&
+          (!x.to || isAddress(x.to)) &&
+          (!x.amount || /^\d+(\.\d+)?$/.test(x.amount)) &&
+          (!x.userOpHash ||
+            (isHex(x.userOpHash) && x.userOpHash.length === 66)) &&
+          (!x.txHash || (isHex(x.txHash) && x.txHash.length === 66)),
+        ),
+      )
+      .slice(0, 40);
+  } catch {
+    return [];
+  }
+}
+export function writeHistory(address: string, activity: Activity[]) {
+  try {
+    localStorage.setItem(key(address), JSON.stringify(activity.slice(0, 40)));
+    return true;
+  } catch {
+    return false;
+  }
+}

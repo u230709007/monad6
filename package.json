@@ -1,0 +1,61 @@
+{
+  "name": "buildproof",
+  "version": "1.0.0",
+  "description": "Mera + x402 + Monad hackathon workspace",
+  "main": "index.js",
+  "scripts": {
+    "test": "vitest run",
+    "dev": "concurrently -k -n api,web \"tsx watch server/index.ts\" \"vite --host localhost\"",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview --host 127.0.0.1",
+    "format": "prettier --write src docs README.md vite.config.ts tsconfig.json index.html",
+    "format:check": "prettier --check src docs README.md vite.config.ts tsconfig.json index.html",
+    "dev:web": "vite --host localhost",
+    "dev:api": "tsx watch server/index.ts",
+    "start": "tsx server/index.ts",
+    "contracts:compile": "node scripts/compile.mjs",
+    "contracts:test": "node scripts/test-contract.mjs",
+    "contracts:deploy": "tsx scripts/deploy.ts",
+    "typecheck": "tsc -b && tsc -p tsconfig.server.json",
+    "test:api": "node scripts/test-api.mjs"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "@category-labs/mera": "0.2.0",
+    "@radix-ui/react-dialog": "^1.1.23",
+    "@x402/core": "^2.27.0",
+    "@x402/evm": "^2.27.0",
+    "@x402/express": "^2.27.0",
+    "@x402/fetch": "^2.27.0",
+    "dotenv": "^18.0.4",
+    "express": "^5.2.1",
+    "lucide-react": "^1.48.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "viem": "^2.56.9"
+  },
+  "private": true,
+  "devDependencies": {
+    "@ethereumjs/common": "^10.1.3",
+    "@ethereumjs/util": "^10.1.3",
+    "@ethereumjs/vm": "^10.1.3",
+    "@types/express": "^5.0.6",
+    "@types/node": "^26.6.3",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.1",
+    "concurrently": "^10.0.5",
+    "prettier": "^3.9.9",
+    "solc": "^0.8.36",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.1",
+    "vitest": "^5.0.2"
+  },
+  "overrides": {
+    "tmp": "^0.2.7"
+  }
+}

@@ -1,0 +1,42 @@
+import type { Hex } from "viem";
+import {
+  getUserOperationHash,
+  type UserOperation,
+} from "viem/account-abstraction";
+
+export async function signAndSubmit({
+  operation,
+  chainId,
+  entryPointAddress,
+  sign,
+  broadcast,
+  onSigned,
+}: {
+  operation: UserOperation<"0.7">;
+  chainId: number;
+  entryPointAddress: `0x${string}`;
+  sign: (operation: UserOperation<"0.7">) => Promise<Hex>;
+  broadcast: (operation: UserOperation<"0.7">) => Promise<Hex>;
+  onSigned: (hash: Hex) => void;
+}) {
+  // Estimation populates a stub signature. It must always be replaced.
+  const signature = await sign(operation);
+  const signed = { ...operation, signature };
+  const expectedHash = getUserOperationHash({
+    userOperation: signed,
+    entryPointAddress,
+    entryPointVersion: "0.7",
+    chainId,
+  });
+  onSigned(expectedHash);
+  try {
+    const returnedHash = await broadcast(signed);
+    if (returnedHash.toLowerCase() !== expectedHash.toLowerCase())
+      throw new Error("Unexpected operation hash");
+    return expectedHash;
+  } catch {
+    throw new Error(
+      "Submission status unknown. Check Activity; do not resend.",
+    );
+  }
+}

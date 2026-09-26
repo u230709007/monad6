@@ -1,0 +1,3 @@
+// ZeroDev's WebAuthn key parser consumes SPKI data through the browser Buffer package.
+import { Buffer } from "buffer";
+Object.assign(globalThis, { Buffer });

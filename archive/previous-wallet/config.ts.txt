@@ -1,0 +1,34 @@
+import { monadTestnet } from "viem/chains";
+import { safeEndpoint } from "./validation";
+
+export const chain = monadTestnet;
+export const explorer = monadTestnet.blockExplorers.default.url;
+
+function readConfig() {
+  try {
+    const bundler = safeEndpoint(import.meta.env.VITE_ZERODEV_BUNDLER_URL);
+    const passkey = safeEndpoint(import.meta.env.VITE_ZERODEV_PASSKEY_URL);
+    const paymaster = safeEndpoint(import.meta.env.VITE_ZERODEV_PAYMASTER_URL);
+    const rpc = safeEndpoint(
+      import.meta.env.VITE_MONAD_RPC_URL || "https://testnet-rpc.monad.xyz",
+    );
+    return {
+      bundler,
+      passkey,
+      paymaster,
+      rpc,
+      ready: Boolean(bundler && passkey),
+      error: "",
+    };
+  } catch {
+    return {
+      bundler: "",
+      passkey: "",
+      paymaster: "",
+      rpc: "",
+      ready: false,
+      error: "Invalid service URLs. Check .env.local.",
+    };
+  }
+}
+export const config = readConfig();

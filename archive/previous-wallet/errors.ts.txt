@@ -1,0 +1,16 @@
+export function friendlyError(error: unknown) {
+  if (error instanceof Error) {
+    if (/cancel|NotAllowed|denied|reject|abort/i.test(error.message))
+      return "Device approval was cancelled. Try again.";
+    if (/timeout|timed out/i.test(error.message))
+      return "Request timed out. Check any pending transaction.";
+    if (/fetch|network|HTTP|CORS/i.test(error.message))
+      return "Unable to connect. Check your connection and settings.";
+    if (
+      !/[\n]|https?:|0x[a-fA-F0-9]{20}/.test(error.message) &&
+      error.message.length < 190
+    )
+      return error.message;
+  }
+  return "Unable to complete. Check your balance, connection, and passkey.";
+}

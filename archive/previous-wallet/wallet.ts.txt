@@ -1,0 +1,144 @@
+import { createPublicClient, http, type Address, type Hex } from "viem";
+import {
+  formatUserOperationRequest,
+  UserOperationReceiptNotFoundError,
+  type UserOperation,
+} from "viem/account-abstraction";
+import {
+  createKernelAccount,
+  createKernelAccountClient,
+  createZeroDevPaymasterClient,
+} from "@zerodev/sdk";
+import { getEntryPoint, KERNEL_V3_3 } from "@zerodev/sdk/constants";
+import {
+  toPasskeyValidator,
+  toWebAuthnKey,
+  WebAuthnMode,
+  PasskeyValidatorContractVersion,
+} from "@zerodev/passkey-validator";
+import { chain, config } from "./config";
+import { signAndSubmit } from "./submit";
+
+const entryPoint = getEntryPoint("0.7");
+
+export async function connectWallet(mode: "register" | "login", name: string) {
+  if (!config.ready) throw new Error("Set up testnet services first.");
+  if (!window.isSecureContext || !window.PublicKeyCredential)
+    throw new Error("Passkeys require HTTPS and a supported browser.");
+  const publicClient = createPublicClient({
+    chain,
+    transport: http(config.rpc, { retryCount: 1, timeout: 15_000 }),
+  });
+  const bundlerCheck = createPublicClient({
+    transport: http(config.bundler, { retryCount: 0, timeout: 15_000 }),
+  });
+  const [rpcChain, bundlerChain] = await Promise.all([
+    publicClient.getChainId(),
+    bundlerCheck.getChainId(),
+  ]);
+  if (rpcChain !== chain.id || bundlerChain !== chain.id)
+    throw new Error("Service network must be Monad Testnet (10143).");
+  const webAuthnKey = await toWebAuthnKey({
+    passkeyName: mode === "register" ? name.trim() || "Mona Wallet" : "",
+    passkeyServerUrl: config.passkey,
+    mode: mode === "register" ? WebAuthnMode.Register : WebAuthnMode.Login,
+    // Fixed to the current host. Select the permanent domain before real onboarding.
+    rpID: window.location.hostname,
+  });
+  const validator = await toPasskeyValidator(publicClient, {
+    webAuthnKey,
+    entryPoint,
+    kernelVersion: KERNEL_V3_3,
+    validatorContractVersion: PasskeyValidatorContractVersion.V0_0_3_PATCHED,
+  });
+  const account = await createKernelAccount(publicClient, {
+    plugins: { sudo: validator },
+    entryPoint,
+    kernelVersion: KERNEL_V3_3,
+  });
+  const sponsor = config.paymaster
+    ? createZeroDevPaymasterClient({ chain, transport: http(config.paymaster) })
+    : undefined;
+  const client = createKernelAccountClient({
+    account,
+    chain,
+    client: publicClient,
+    // Never retry a submitted signed operation automatically.
+    bundlerTransport: http(config.bundler, { retryCount: 0, timeout: 30_000 }),
+    ...(sponsor
+      ? {
+          paymaster: {
+            getPaymasterData: async (userOperation) =>
+              sponsor.sponsorUserOperation({ userOperation }),
+          },
+        }
+      : {}),
+  });
+  return {
+    address: account.address,
+    balance: () => publicClient.getBalance({ address: account.address }),
+    async prepareTransfer(to: Address, value: bigint) {
+      const freshBalance = await publicClient.getBalance({
+        address: account.address,
+      });
+      if (value > freshBalance)
+        throw new Error("Balance changed. Insufficient MON.");
+      // Estimation uses the validator's stub signature; it must not prompt for a passkey.
+      const operation = await client.prepareUserOperation({
+        calls: [{ to, value, data: "0x" }],
+      });
+      const gas =
+        operation.callGasLimit +
+        operation.verificationGasLimit +
+        operation.preVerificationGas +
+        (operation.paymasterVerificationGasLimit ?? 0n) +
+        (operation.paymasterPostOpGasLimit ?? 0n);
+      const maxFee = gas * operation.maxFeePerGas;
+      if (!sponsor && value + maxFee > freshBalance)
+        throw new Error(
+          "Insufficient balance for the transfer and network fee.",
+        );
+      return { operation, maxFee, sponsored: Boolean(sponsor) };
+    },
+    async sendPrepared(
+      prepared: Awaited<ReturnType<typeof client.prepareUserOperation>>,
+      onSigned: (hash: Hex) => void,
+    ) {
+      return signAndSubmit({
+        operation: prepared as UserOperation<"0.7">,
+        chainId: chain.id,
+        entryPointAddress: entryPoint.address,
+        sign: (operation) => account.signUserOperation(operation),
+        onSigned,
+        broadcast: (signed) =>
+          client.request(
+            {
+              method: "eth_sendUserOperation",
+              params: [formatUserOperationRequest(signed), entryPoint.address],
+            },
+            { retryCount: 0 },
+          ),
+      });
+    },
+    async receipt(hash: Hex) {
+      try {
+        return await client.getUserOperationReceipt({ hash });
+      } catch (error) {
+        if (error instanceof UserOperationReceiptNotFoundError) return null;
+        throw error;
+      }
+    },
+    waitReceipt: (hash: Hex) =>
+      client.waitForUserOperationReceipt({ hash, timeout: 90_000 }),
+    signMessage: (message: string) => client.signMessage({ message }),
+    verifyMessage: (message: string, signature: Hex) =>
+      publicClient.verifyMessage({
+        address: account.address,
+        message,
+        signature,
+      }),
+  };
+}
+
+export type Wallet = Awaited<ReturnType<typeof connectWallet>>;
+export type PreparedTransfer = Awaited<ReturnType<Wallet["prepareTransfer"]>>;

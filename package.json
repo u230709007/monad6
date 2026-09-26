@@ -17,7 +17,8 @@
     "contracts:test": "node scripts/test-contract.mjs",
     "contracts:deploy": "tsx scripts/deploy.ts",
     "typecheck": "tsc -b && tsc -p tsconfig.server.json",
-    "test:api": "node scripts/test-api.mjs"
+    "test:api": "node scripts/test-api.mjs",
+    "check:live": "tsx scripts/check-live.ts"
   },
   "keywords": [],
   "author": "",

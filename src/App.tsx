@@ -21,7 +21,12 @@ import {
   LoaderCircle,
 } from "lucide-react";
 import * as Dialog from "@radix-ui/react-dialog";
-import { withMera, escrowAction, publicClient } from "./lib/mera";
+import {
+  withMera,
+  escrowAction,
+  publicClient,
+  friendlyError,
+} from "./lib/mera";
 import { abi } from "./lib/escrow-abi";
 import { ChainConsole } from "./components/ChainConsole";
 import { DeployEvent } from "./components/DeployEvent";
@@ -33,12 +38,15 @@ type Config = {
   demo: boolean;
   contract: Address | null;
   stake: string;
+  deposit: string;
   prize: string;
   network: `eip155:${string}`;
   price: string;
   asset: string;
   payTo: string;
   aiReady: boolean;
+  provider: string;
+  model?: string;
 };
 type User = {
   id: string;
@@ -60,6 +68,19 @@ type Prompt = {
   mode: string;
 };
 type Entry = User & { promptCount: number; report: string | null };
+const FILE_RE = /<<<FILE ([^\n>]+)>>>\n([\s\S]*?)\n?<<<END>>>/g;
+// Split an AI reply into prose and proposed file changes.
+function splitAnswer(answer: string) {
+  const files = [...answer.matchAll(FILE_RE)].map((m) => ({
+    path: m[1].trim(),
+    lines: m[2].split("\n").length,
+  }));
+  const text = answer.replace(
+    FILE_RE,
+    (_m, path) => `📄 ${String(path).trim()}`,
+  );
+  return { text, files };
+}
 const nav = [
   { id: "overview", label: "Overview", icon: LayoutDashboard },
   { id: "workspace", label: "Workspace", icon: Terminal },
@@ -69,9 +90,15 @@ const nav = [
 ];
 export default function App() {
   const [page, setPage] = useState("overview"),
+    [projectForm, setProjectForm] = useState(false),
     [config, setConfig] = useState<Config>(),
     [user, setUser] = useState<User>(),
     [prompts, setPrompts] = useState<Prompt[]>([]),
+    [applies, setApplies] = useState<Record<string, string>>({}),
+    [skipped, setSkipped] = useState<Record<string, string[]>>({}),
+    [chatFrom, setChatFrom] = useState(
+      () => localStorage.getItem("chatFrom") || "",
+    ),
     [token, setToken] = useState(sessionStorage.getItem("bp-token") || ""),
     [busy, setBusy] = useState(""),
     [notice, setNotice] = useState(""),
@@ -79,8 +106,30 @@ export default function App() {
     [prompt, setPrompt] = useState(""),
     [entries, setEntries] = useState<Entry[]>([]),
     [evidence, setEvidence] = useState(""),
-    [balances, setBalances] = useState({ stake: "0", reward: "0" }),
-    [appeal, setAppeal] = useState("");
+    [balances, setBalances] = useState({
+      stake: "0",
+      deposit: "0",
+      reward: "0",
+    }),
+    [seat, setSeat] = useState<{
+      status: "none" | "seated" | "waitlisted" | "checkedIn";
+      ahead: number;
+      seats: number;
+      capacity: number;
+    }>(),
+    [walletMon, setWalletMon] = useState<string>("0"),
+    [appeal, setAppeal] = useState(""),
+    [mostStep, setMostStep] = useState(false),
+    [anchors, setAnchors] = useState<
+      { head: string; length: number; commit_url: string; created: string }[]
+    >([]),
+    [credit, setCredit] = useState<{
+      openSource: boolean;
+      status: string;
+      grantedMicro: number;
+      spentMicro: number;
+      remainingMicro: number;
+    }>();
   async function api(path: string, body?: unknown, auth = token) {
     const r = await fetch("/api" + path, {
       method: body === undefined ? "GET" : "POST",
@@ -105,15 +154,40 @@ export default function App() {
     try {
       await fn();
     } catch (e) {
-      setNotice(e instanceof Error ? e.message : "Something went wrong.");
+      setNotice(friendlyError(e));
     } finally {
       setBusy("");
     }
   }
+  const mostIntro = user
+    ? `${user.project} (${user.team}): built on Monad with BuildProof. Repo: ${user.repo}`
+    : "";
+  function openMost() {
+    window.open("https://most.devnads.com/", "_blank", "noopener");
+    navigator.clipboard?.writeText(mostIntro).catch(() => {});
+    setMostStep(true);
+  }
   async function refresh(auth = token) {
     const u = await api("/me", undefined, auth);
     setUser(u);
+    setCredit(await api("/credit", undefined, auth));
     setPrompts(await api("/prompts", undefined, auth));
+    setAnchors(await api("/chain/anchors", undefined, auth));
+    const a: { prompt_id: string; commit_url: string }[] = await api(
+      "/applies",
+      undefined,
+      auth,
+    );
+    setApplies(Object.fromEntries(a.map((x) => [x.prompt_id, x.commit_url])));
+  }
+  function applyToRepo(p: Prompt) {
+    const paths = splitAnswer(p.answer)
+      .files.map((f) => f.path)
+      .filter((x) => !(skipped[p.id] || []).includes(x));
+    run("Committing", async () => {
+      const r = await api("/apply", { promptId: p.id, paths });
+      setApplies((a) => ({ ...a, [p.id]: r.commit_url }));
+    });
   }
   useEffect(() => {
     const move = (e: PointerEvent) => {
@@ -148,35 +222,86 @@ export default function App() {
         .then(setEntries)
         .catch((e) => setNotice(e.message));
     if (page === "funds" && user && config) {
-      if (config.demo)
-        setBalances({ stake: user.joined ? "1000" : "0", reward: "0" });
-      else if (config.contract)
+      if (!user.address.startsWith("demo"))
+        publicClient
+          .getBalance({ address: user.address as Address })
+          .then((b) => setWalletMon(formatEther(b)))
+          .catch((e) => setNotice(e.message));
+      else setWalletMon("0");
+      if (config.demo) {
+        setBalances({
+          stake: user.joined ? "1000" : "0",
+          deposit: user.joined ? "100" : "0",
+          reward: "0",
+        });
+        setSeat(undefined);
+      } else if (config.contract) {
+        const address = config.contract,
+          who = user.address as Address;
+        const mine = (
+          functionName: "stakes" | "deposits" | "rewards" | "queuePosition",
+        ) =>
+          publicClient.readContract({
+            address,
+            abi,
+            functionName,
+            args: [who],
+          });
+        const flag = (functionName: "joined" | "waitlisted" | "checkedIn") =>
+          publicClient.readContract({
+            address,
+            abi,
+            functionName,
+            args: [who],
+          });
+        const total = (functionName: "waitlistHead" | "seats" | "capacity") =>
+          publicClient.readContract({ address, abi, functionName });
         Promise.all([
-          publicClient.readContract({
-            address: config.contract,
-            abi,
-            functionName: "stakes",
-            args: [user.address as Address],
-          }),
-          publicClient.readContract({
-            address: config.contract,
-            abi,
-            functionName: "rewards",
-            args: [user.address as Address],
-          }),
+          mine("stakes"),
+          mine("deposits"),
+          mine("rewards"),
+          mine("queuePosition"),
+          flag("joined"),
+          flag("waitlisted"),
+          flag("checkedIn"),
+          total("waitlistHead"),
+          total("seats"),
+          total("capacity"),
         ])
-          .then(([s, r]) =>
-            setBalances({ stake: formatEther(s), reward: formatEther(r) }),
+          .then(
+            ([s, d, r, pos, joined, waiting, checked, head, seats, cap]) => {
+              setBalances({
+                stake: formatEther(s),
+                deposit: formatEther(d),
+                reward: formatEther(r),
+              });
+              setSeat({
+                status: checked
+                  ? "checkedIn"
+                  : joined
+                    ? "seated"
+                    : waiting
+                      ? "waitlisted"
+                      : "none",
+                // Upper bound: earlier entries may already have withdrawn.
+                ahead: waiting ? Number(pos - head) - 1 : 0,
+                seats: Number(seats),
+                capacity: Number(cap),
+              });
+            },
           )
           .catch((e) => setNotice(e.message));
+      }
     }
   }, [page, user, config]);
   async function signIn(kind: "create" | "login" | "demo") {
     await run("Signing in", async () => {
       let result;
+      let walletAddress = "";
       if (kind === "demo") result = await api("/auth/demo", {});
       else
         result = await withMera(kind === "create", async (account) => {
+          walletAddress = account.address;
           const c = await api("/auth/challenge", {});
           const signature = await account.signMessage({ message: c.message });
           return api("/auth/verify", {
@@ -185,6 +310,7 @@ export default function App() {
             signature,
           });
         });
+      if (kind !== "demo") setNotice(`Wallet ready: ${walletAddress}`);
       sessionStorage.setItem("bp-token", result.token);
       setUser(undefined);
       setPrompts([]);
@@ -216,12 +342,14 @@ export default function App() {
         if (!alreadyJoined)
           await escrowAction("join", user.address, config.contract);
       }
-      await api("/join", {});
+      const result = await api("/join", {});
       await refresh();
       setNotice(
         config?.demo
           ? "Demo join recorded. No real MON locked."
-          : "1,000 MON stake locked.",
+          : result.waitlisted
+            ? "The event is full, so you are on the waitlist. You get a seat automatically when someone withdraws before the start; otherwise everything is refunded."
+            : "1,000 MON stake and 100 MON attendance deposit locked.",
       );
     });
   }
@@ -233,7 +361,8 @@ export default function App() {
     }
     await run("Thinking", async () => {
       let result;
-      if (config?.demo) result = await api("/chat", { prompt });
+      if (config?.demo)
+        result = await api("/chat", { prompt, after: chatFrom });
       else {
         if (!config) throw new Error("Loading config.");
         result = await withMera(false, async (account) => {
@@ -261,7 +390,7 @@ export default function App() {
               "content-type": "application/json",
               Authorization: `Bearer ${token}`,
             },
-            body: JSON.stringify({ prompt }),
+            body: JSON.stringify({ prompt, after: chatFrom }),
           });
           const data = await r.json();
           if (!r.ok)
@@ -272,6 +401,13 @@ export default function App() {
       setPrompts((p) => [...p, result]);
       setPrompt("");
     });
+  }
+  const chatPrompts = prompts.filter((p) => p.created > chatFrom);
+  function newChat() {
+    const now = new Date().toISOString();
+    localStorage.setItem("chatFrom", now);
+    setChatFrom(now);
+    setPrompt("");
   }
   const date = (v: string) =>
     new Date(v).toLocaleString("en-US", {
@@ -334,7 +470,13 @@ export default function App() {
             </span>
             <span>
               {user?.name || "Sign in"}
-              <small>{user?.team || "Connect with passkey"}</small>
+              <small>
+                {user
+                  ? user.address.startsWith("demo")
+                    ? user.team || "Demo account"
+                    : `${user.address.slice(0, 6)}…${user.address.slice(-4)}`
+                  : "Connect with passkey"}
+              </small>
             </span>
             {user ? <LogOut size={16} /> : <ArrowRight size={16} />}
           </button>
@@ -348,11 +490,7 @@ export default function App() {
           </div>
           <div className="top-actions">
             <span className="mode-badge">
-              {!config
-                ? "CONNECTING"
-                : config.demo
-                  ? "DEMO"
-                  : "MONAD TESTNET"}
+              {!config ? "CONNECTING" : config.demo ? "DEMO" : "MONAD TESTNET"}
             </span>
             <button
               className="button small secondary"
@@ -367,10 +505,7 @@ export default function App() {
           {notice && (
             <div className="notice" role="status">
               {notice}
-              <button
-                aria-label="Dismiss"
-                onClick={() => setNotice("")}
-              >
+              <button aria-label="Dismiss" onClick={() => setNotice("")}>
                 ×
               </button>
             </div>
@@ -444,11 +579,11 @@ export default function App() {
               </section>
               <div className="stats-grid">
                 <Stat
-                  label="Stake"
-                  value="1,000"
+                  label="Entry"
+                  value="1,100"
                   suffix="MON"
                   icon={LockKeyhole}
-                  detail="Per person · locked during the event"
+                  detail="1,000 stake + 100 deposit, refunded if you show up"
                 />
                 <Stat
                   label="Build logs"
@@ -489,9 +624,7 @@ export default function App() {
                             <strong>{p.prompt.slice(0, 80)}</strong>
                             <small>
                               {date(p.created)} ·{" "}
-                              {p.mode === "demo"
-                                ? "Demo log"
-                                : "Router log"}
+                              {p.mode === "demo" ? "Demo log" : "Router log"}
                             </small>
                           </div>
                           <ShieldCheck size={17} />
@@ -542,7 +675,7 @@ export default function App() {
                     },
                     {
                       title: "Lock your stake",
-                      text: "Reserve your spot with 1,000 MON.",
+                      text: "Reserve your seat with 1,000 MON + a 100 MON attendance deposit.",
                       done: !!user?.joined,
                       action: join,
                     },
@@ -589,21 +722,31 @@ export default function App() {
                     <h3>
                       <span className="status-dot" /> Build assistant
                     </h3>
-                    <span className="pill neutral">
-                      {config?.demo && !config?.aiReady
-                        ? "DEMO REPLIES"
-                        : config?.demo
-                          ? "ANTHROPIC"
-                          : "ANTHROPIC · x402"}
-                    </span>
+                    <div
+                      style={{ display: "flex", gap: 8, alignItems: "center" }}
+                    >
+                      <button
+                        type="button"
+                        className="button"
+                        onClick={newChat}
+                        disabled={!chatPrompts.length || !!busy}
+                      >
+                        New chat
+                      </button>
+                      <span className="pill neutral">
+                        {(config?.provider || "AI").toUpperCase()}
+                        {config?.demo ? "" : " · x402"}
+                      </span>
+                    </div>
                   </div>
                   <div className="messages">
-                    {!prompts.length && (
+                    {!chatPrompts.length && (
                       <div className="chat-welcome">
                         <Terminal size={36} />
                         <h2>What are we building today?</h2>
                         <p>
-                          Refine your idea, design your architecture, or debug together.
+                          Refine your idea, design your architecture, or debug
+                          together.
                         </p>
                         <div className="suggestions">
                           {[
@@ -619,10 +762,10 @@ export default function App() {
                         </div>
                       </div>
                     )}
-                    {prompts.map((p) => (
+                    {chatPrompts.map((p) => (
                       <div className="exchange" key={p.id}>
                         <div className="message user-message">
-                          <small>YOU ·  {date(p.created)}</small>
+                          <small>YOU · {date(p.created)}</small>
                           <p>{p.prompt}</p>
                         </div>
                         <div className="message assistant-message">
@@ -630,10 +773,62 @@ export default function App() {
                             <Layers size={14} /> BUILDPROOF{" "}
                             {p.mode === "demo" ? "· DEMO" : ""}
                           </small>
-                          <p>{p.answer}</p>
+                          <p>{splitAnswer(p.answer).text}</p>
+                          {splitAnswer(p.answer).files.length > 0 && (
+                            <div className="apply-box">
+                              {applies[p.id] ? (
+                                <a
+                                  href={applies[p.id]}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                >
+                                  <Check size={14} /> Committed to GitHub ↗
+                                </a>
+                              ) : (
+                                <>
+                                  {splitAnswer(p.answer).files.map((f) => (
+                                    <label key={f.path}>
+                                      <input
+                                        type="checkbox"
+                                        checked={
+                                          !(skipped[p.id] || []).includes(
+                                            f.path,
+                                          )
+                                        }
+                                        onChange={(e) =>
+                                          setSkipped((sk) => ({
+                                            ...sk,
+                                            [p.id]: e.target.checked
+                                              ? (sk[p.id] || []).filter(
+                                                  (x) => x !== f.path,
+                                                )
+                                              : [...(sk[p.id] || []), f.path],
+                                          }))
+                                        }
+                                      />
+                                      {f.path} <small>({f.lines} lines)</small>
+                                    </label>
+                                  ))}
+                                  <button
+                                    type="button"
+                                    className="button primary"
+                                    disabled={!!busy || !user?.repo}
+                                    onClick={() => applyToRepo(p)}
+                                  >
+                                    Apply to GitHub
+                                  </button>
+                                  {!user?.repo && (
+                                    <small>
+                                      Add your repo on the Project page first.
+                                    </small>
+                                  )}
+                                </>
+                              )}
+                            </div>
+                          )}
                           <span className="hash">
-                            <ShieldCheck size={12} /> Log: {" "}
-                            {p.hash.slice(0, 16)}…
+                            <ShieldCheck size={12} /> Log: {p.hash.slice(0, 16)}
+                            …
                           </span>
                         </div>
                       </div>
@@ -673,7 +868,7 @@ export default function App() {
                     "Mera account",
                     "x402 payment check",
                     "BuildProof router",
-                    "Anthropic reply",
+                    `${config?.provider || "AI"} reply`,
                     "Build log entry",
                   ].map((s, i) => (
                     <div className="route-step" key={s}>
@@ -683,7 +878,8 @@ export default function App() {
                   ))}
                   <hr />
                   <small>
-                    Prompts and replies are logged and may be reviewed by the jury. Do not share passwords, API keys, or personal data.
+                    Prompts and replies are logged and may be reviewed by the
+                    jury. Do not share passwords, API keys, or personal data.
                   </small>
                 </aside>
               </div>
@@ -699,6 +895,20 @@ export default function App() {
               <section className="panel form-panel">
                 {!user ? (
                   <LoginPrompt open={() => setLogin(true)} />
+                ) : !projectForm ? (
+                  <div className="project-summary">
+                    <div>
+                      <h3>{user.project || "No project yet"}</h3>
+                      <p>{user.team || "Create your team to get started."}</p>
+                    </div>
+                    <button
+                      type="button"
+                      className="button primary"
+                      onClick={() => setProjectForm(true)}
+                    >
+                      New team project
+                    </button>
+                  </div>
                 ) : (
                   <form
                     onSubmit={(e) => {
@@ -710,6 +920,15 @@ export default function App() {
                         await api("/project", data);
                         await refresh();
                         setNotice("Project saved.");
+                        if (
+                          data.repo &&
+                          !credit?.openSource &&
+                          confirm(
+                            "Open source this project? You will be sent to the Monad Open Source Track (MOST) form for AI credits.",
+                          )
+                        )
+                          openMost();
+                        setProjectForm(false);
                       });
                     }}
                   >
@@ -749,7 +968,7 @@ export default function App() {
                           name="repo"
                           defaultValue={user.repo}
                           placeholder="https://github.com/takim/proje"
-                          readOnly={!!user.joined}
+                          readOnly={!!user.joined && !!user.repo}
                         />
                       </label>
                       <label className="full">
@@ -761,14 +980,102 @@ export default function App() {
                           readOnly={!!user.joined}
                         />
                         <small>
-                          Baseline is locked after joining. Self-declared; the jury verifies the repo.
+                          Baseline is locked after joining. Self-declared; the
+                          jury verifies the repo.
                         </small>
                       </label>
                     </div>
                     <button className="button primary" disabled={!!busy}>
                       Save project <Check size={17} />
                     </button>
+                    <button
+                      type="button"
+                      className="button"
+                      onClick={() => setProjectForm(false)}
+                    >
+                      Cancel
+                    </button>
                   </form>
+                )}
+              </section>
+              <section className="panel padded">
+                <h3>Anchor the log</h3>
+                <p>
+                  The log chain is verified inside this database only. Anchoring
+                  commits the current head hash to your GitHub repo, so the
+                  commit date on GitHub becomes an outside timestamp for
+                  everything logged so far.
+                </p>
+                <button
+                  className="button primary"
+                  disabled={!!busy || !user?.repo || !prompts.length}
+                  onClick={() =>
+                    run("Anchoring", async () => {
+                      const r = await api("/chain/anchor", {});
+                      setAnchors(await api("/chain/anchors"));
+                      setNotice(`Anchored ${r.length} entries in your repo.`);
+                    })
+                  }
+                >
+                  Anchor current log to GitHub <Check size={16} />
+                </button>
+                {!user?.repo && <small>Add your repo first.</small>}
+                {anchors.map((a) => (
+                  <p key={a.head}>
+                    <a href={a.commit_url} target="_blank" rel="noreferrer">
+                      {a.length} entries · {a.head.slice(0, 12)} ↗
+                    </a>{" "}
+                    <small>{date(a.created)}</small>
+                  </p>
+                ))}
+              </section>
+              <section className="panel padded">
+                <h3>Open source & AI credit</h3>
+                <p>
+                  You never need an API key: AI calls are paid by the project,
+                  not by you. Monad's Open Source Track (MOST) grants AI
+                  credits to public projects. Want to open source this one?
+                </p>
+                {credit?.openSource ? (
+                  <p>
+                    Applied via MOST. Credits are granted by Monad at their
+                    discretion. AI spent so far: $
+                    {(credit.spentMicro / 1e6).toFixed(4)}
+                  </p>
+                ) : (
+                  <>
+                    <button
+                      className="button primary"
+                      disabled={!!busy || !user?.repo}
+                      onClick={() => openMost()}
+                    >
+                      Yes, open it on MOST <ArrowUpRight size={16} />
+                    </button>
+                    {mostStep && (
+                      <>
+                        <p>
+                          The form opened in a new tab. Paste this in the
+                          introduction field, then come back:
+                        </p>
+                        <pre className="report-preview">{mostIntro}</pre>
+                        <button
+                          className="button"
+                          disabled={!!busy}
+                          onClick={() =>
+                            run("Registering", async () => {
+                              await api("/opensource", {});
+                              await refresh();
+                              setMostStep(false);
+                              setNotice("Marked as applied to MOST.");
+                            })
+                          }
+                        >
+                          I submitted the form <Check size={16} />
+                        </button>
+                      </>
+                    )}
+                    {!user?.repo && <small>Add your repo first.</small>}
+                  </>
                 )}
               </section>
             </>
@@ -787,9 +1094,18 @@ export default function App() {
                   suffix="MON"
                   icon={Wallet}
                   detail={
-                    config?.demo
-                      ? "Demo event"
-                      : "Contract funding required"
+                    config?.demo ? "Demo event" : "Contract funding required"
+                  }
+                />
+                <Stat
+                  label="Wallet balance"
+                  value={walletMon}
+                  suffix="MON"
+                  icon={Wallet}
+                  detail={
+                    user?.address.startsWith("demo")
+                      ? "Demo account · no real wallet"
+                      : "Monad testnet · needed to join"
                   }
                 />
                 <Stat
@@ -801,6 +1117,23 @@ export default function App() {
                     config?.demo
                       ? "Demo balance · not real assets"
                       : "Monad testnet contract balance"
+                  }
+                />
+                <Stat
+                  label="Attendance deposit"
+                  value={balances.deposit}
+                  suffix="MON"
+                  icon={Users}
+                  detail={
+                    !seat
+                      ? "Refunded on check-in"
+                      : seat.status === "checkedIn"
+                        ? "Checked in · claim it back now"
+                        : seat.status === "seated"
+                          ? `Seat held · ${seat.seats}/${seat.capacity} taken`
+                          : seat.status === "waitlisted"
+                            ? `Waitlist · up to ${seat.ahead} ahead of you`
+                            : `${seat.seats}/${seat.capacity} seats taken`
                   }
                 />
                 <Stat
@@ -823,13 +1156,27 @@ export default function App() {
                     Full event rules <ExternalLink size={14} />
                   </a>
                   <p>
-                    1,000 MON is locked per person. Participants who follow the rules can get their stake back once results are final.
+                    1,000 MON is locked per person. Participants who follow the
+                    rules can get their stake back once results are final.
+                  </p>
+                  <p>
+                    Seats are limited, so a 100 MON attendance deposit is also
+                    locked. It is refunded as soon as you are checked in at the
+                    event. No-shows lose it to the treasury and cannot win
+                    prizes, so empty reservations do not block people on the
+                    waitlist.
                   </p>
                   <div className="rule-line">
-                    <Check size={18} /> AI usage fees do not come out of your stake.
+                    <Users size={18} /> Can't make it? Withdraw before the start
+                    for a full refund; your seat goes to the next in line.
                   </div>
                   <div className="rule-line">
-                    <Clock size={18} /> The refund deadline prevents indefinite locks.
+                    <Check size={18} /> AI usage fees do not come out of your
+                    stake.
+                  </div>
+                  <div className="rule-line">
+                    <Clock size={18} /> The refund deadline prevents indefinite
+                    locks.
                   </div>
                   <div className="rule-line">
                     <Scale size={18} /> Slashing needs a jury majority.
@@ -842,8 +1189,37 @@ export default function App() {
                     >
                       {user?.joined
                         ? "Joined"
-                        : "Join with 1,000 MON"}
+                        : seat?.status === "waitlisted"
+                          ? "On waitlist"
+                          : "Join with 1,100 MON"}
                     </button>
+                    {(seat?.status === "seated" ||
+                      seat?.status === "waitlisted") && (
+                      <button
+                        className="button secondary"
+                        disabled={!!busy}
+                        onClick={() =>
+                          run("Withdrawing", async () => {
+                            if (!user || !config?.contract) return;
+                            if (
+                              !confirm(
+                                "Withdraw your registration? You get 1,100 MON back and give up your seat.",
+                              )
+                            )
+                              return;
+                            const hash = await escrowAction(
+                              "withdrawRegistration",
+                              user.address,
+                              config.contract,
+                            );
+                            await refresh();
+                            setNotice("Registration withdrawn:  " + hash);
+                          })
+                        }
+                      >
+                        Withdraw registration
+                      </button>
+                    )}
                     <button
                       className="button secondary"
                       disabled={!!busy || !user}
@@ -896,7 +1272,8 @@ export default function App() {
                 <section className="panel padded">
                   <h3>Review & appeal</h3>
                   <p>
-                    An AI report is not a verdict. The jury reviews findings; participants can submit explanations and evidence.
+                    An AI report is not a verdict. The jury reviews findings;
+                    participants can submit explanations and evidence.
                   </p>
                   <form
                     onSubmit={(e) => {
@@ -929,7 +1306,8 @@ export default function App() {
                     </button>
                   </form>
                   <small>
-                    This form adds a statement to the file; it does not change the contract's appeal window.
+                    This form adds a statement to the file; it does not change
+                    the contract's appeal window.
                   </small>
                 </section>
               </div>
@@ -947,13 +1325,13 @@ export default function App() {
                   <LoginPrompt open={() => setLogin(true)} />
                 </section>
               ) : !user.jury ? (
-                <div className="notice">
-                  This account is not a juror.
-                </div>
+                <div className="notice">This account is not a juror.</div>
               ) : (
                 <>
                   <div className="notice">
-                    {config?.demo ? "Demo jury view.  " : ""}AI analysis never penalizes automatically. On-chain decisions require juror signatures.
+                    {config?.demo ? "Demo jury view.  " : ""}AI analysis never
+                    penalizes automatically. On-chain decisions require juror
+                    signatures.
                   </div>
                   <section className="panel">
                     {entries.length ? (
@@ -988,7 +1366,66 @@ export default function App() {
                                 setEvidence(JSON.stringify(data, null, 2));
                               })
                             }
-                          > Logs </button>
+                          >
+                            {" "}
+                            Logs{" "}
+                          </button>
+                          <button
+                            className="button secondary"
+                            disabled={!!busy}
+                            onClick={() =>
+                              run("Checking integrity", async () => {
+                                const id = encodeURIComponent(entry.id);
+                                const [chain, sig] = await Promise.all([
+                                  api(`/jury/${id}/verify`),
+                                  api(`/jury/${id}/signals`),
+                                ]);
+                                const lines = [
+                                  chain.valid
+                                    ? `Log chain intact: ${chain.length} entries. Head hash: ${chain.head ?? "(empty)"}`
+                                    : `LOG CHAIN BROKEN at entry ${chain.brokenAt + 1} (${chain.reason}).`,
+                                  sig.baselineDeclared
+                                    ? sig.baselineVerified
+                                      ? "Baseline commit exists in the GitHub repo."
+                                      : "Baseline commit could NOT be verified on GitHub (private repo, wrong SHA or API limit)."
+                                    : "No baseline commit declared.",
+                                  "",
+                                  ...sig.signals.map(
+                                    (s: { level: string; text: string }) =>
+                                      `${s.level === "warn" ? "⚠ " : "• "}${s.text}`,
+                                  ),
+                                  "",
+                                  "These are observations for questions, not verdicts.",
+                                ];
+                                setEvidence(lines.join("\n"));
+                              })
+                            }
+                          >
+                            Integrity
+                          </button>
+                          <button
+                            className="button secondary"
+                            disabled={!!busy}
+                            onClick={() =>
+                              run("Exporting", async () => {
+                                const data = await api(
+                                  `/jury/${encodeURIComponent(entry.id)}/export`,
+                                );
+                                const url = URL.createObjectURL(
+                                  new Blob([JSON.stringify(data, null, 2)], {
+                                    type: "application/json",
+                                  }),
+                                );
+                                const a = document.createElement("a");
+                                a.href = url;
+                                a.download = `buildproof-${entry.team || "team"}.json`;
+                                a.click();
+                                URL.revokeObjectURL(url);
+                              })
+                            }
+                          >
+                            Export
+                          </button>
                           <button
                             className="button primary"
                             disabled={!!busy || entry.promptCount === 0}
@@ -1076,7 +1513,8 @@ export default function App() {
             </span>
             <Dialog.Title>You hold the key.</Dialog.Title>
             <Dialog.Description>
-              Create an account with a Mera passkey or return to yours. Your private key never leaves your device.
+              Create an account with a Mera passkey or return to yours. Your
+              private key never leaves your device.
             </Dialog.Description>
             <button
               className="button primary"
@@ -1104,7 +1542,9 @@ export default function App() {
             {busy && <p>{busy}</p>}
             {notice && <p role="alert">{notice}</p>}
             <small>
-              Requires a browser with passkey PRF support. The demo account creates no real wallet.
+              Passkey needs PRF support (phone/security key; Windows Hello often
+              lacks it); use a phone or security-key passkey. The demo account
+              creates no real wallet.
             </small>
             <Dialog.Close className="dialog-close" aria-label="Close">
               ×

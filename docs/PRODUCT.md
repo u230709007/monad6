@@ -6,7 +6,7 @@ Hackathon jürisi yalnızca son demoyu görür. Takımların etkinlik boyunca ne
 
 ## Ürün
 
-Mera passkey hesabıyla kayıt olunan, Monad üzerinde katılım teminatı kilitlenen ve geliştirme promptları x402 kontrollü router üzerinden Anthropic'e giden bir çalışma alanı. Jüri kayıtları ve gerekçeli AI raporunu inceler. Sözleşme ödül havuzunu, teminatı, itiraz sürelerini ve kesinti oylarını yönetir.
+Mera passkey hesabıyla kayıt olunan, Monad üzerinde katılım teminatı kilitlenen ve geliştirme promptları x402 kontrollü router üzerinden SiloRail LLM ağ geçidine giden bir çalışma alanı. Jüri kayıtları ve gerekçeli AI raporunu inceler. Sözleşme ödül havuzunu, teminatı, itiraz sürelerini ve kesinti oylarını yönetir.
 
 ## Roller
 
@@ -20,7 +20,7 @@ Tek etkinlik ve tek AI sağlayıcısı. Takım adı profil alanıdır, hesap ba�
 
 ## Ekonomi
 
-Ödül 10.000 MON. Katılım 1.000 MON/kişi. Kesinleşmiş ihlalde tüm teminat kesilir. Kesinti sabit hazine adresine gider. AI ödemeleri bağımsız x402 token ödemeleridir. Kullanıcı her çağrıda passkey ile imzalar; sınırsız harcama oturumu yoktur. Sponsorun otomatik bütçe yüklemesi uygulanmamıştır.
+Ödül 10.000 MON. Katılım 1.000 MON/kişi teminat + 100 MON katılım depozitosu. Kontenjan sözleşmede sabittir; dolunca yeni kayıtlar zincir üstü bekleme listesine girer. Başlangıçtan önce kaydını geri çeken her şeyini geri alır ve yeri sıradakine geçer. Etkinlikte yoklaması alınan depozitosunu hemen geri çeker; gelmeyenin depozitosu hazineye gider ve ödül alamaz. Kesinleşmiş ihlalde tüm teminat kesilir. Kesinti sabit hazine adresine gider. AI ödemeleri bağımsız x402 token ödemeleridir. Kullanıcı her çağrıda passkey ile imzalar; sınırsız harcama oturumu yoktur. Sunucu, LLM çağrısını SiloRail'e kendi ajan cüzdanıyla (`AGENT_PRIVATE_KEY`) x402 üzerinden Monad USDC ile öder; API anahtarı yoktur, çağrı başına tavan `SILORAIL_MAX_MICRO_USD` ile sınırlıdır ve gerçek maliyet kullanıcı bazında kaydedilir. Sponsorun otomatik bütçe yüklemesi uygulanmamıştır.
 
 ## Kanıt sınırı
 

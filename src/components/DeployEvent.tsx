@@ -1,7 +1,6 @@
 import { useState, type FormEvent } from "react";
-import { createWalletClient, http, isAddress, type Abi, type Hex } from "viem";
-import { monadTestnet } from "viem/chains";
-import { withMera, publicClient } from "../lib/mera";
+import { isAddress, type Abi, type Hex } from "viem";
+import { withMera, publicClient, walletClientFor } from "../lib/mera";
 export function DeployEvent({
   address,
   demo,
@@ -31,6 +30,8 @@ export function DeployEvent({
       const end = BigInt(
         Math.floor(new Date(String(data.get("end"))).getTime() / 1000),
       );
+      const capacity = BigInt(String(data.get("capacity")));
+      if (capacity <= 0n) throw new Error("Capacity must be at least 1.");
       const appeal = 86400n;
       const deadline = end + 5n * appeal;
       if (
@@ -43,9 +44,7 @@ export function DeployEvent({
           "At least three distinct juror addresses and a valid treasury address are required.",
         );
       if (start <= BigInt(Math.floor(Date.now() / 1000)) || end <= start)
-        throw new Error(
-          "Start must be in the future and end after start.",
-        );
+        throw new Error("Start must be in the future and end after start.");
       const r = await fetch("/api/contract-artifact");
       if (!r.ok) throw new Error("Compile the contract first.");
       const artifact = (await r.json()) as {
@@ -58,14 +57,7 @@ export function DeployEvent({
           throw new Error("Select the passkey you signed in with.");
         if ((await publicClient.getChainId()) !== 10143)
           throw new Error("Monad testnet connection required.");
-        const wallet = createWalletClient({
-          account,
-          chain: monadTestnet,
-          transport: http(
-            import.meta.env.VITE_MONAD_RPC_URL ||
-              "https://testnet-rpc.monad.xyz",
-          ),
-        });
+        const wallet = walletClientFor(account);
         const hash = await wallet.deployContract({
           abi: artifact.abi,
           bytecode: artifact.bytecode,
@@ -77,6 +69,7 @@ export function DeployEvent({
             deadline,
             appeal,
             artifact.rulesHash,
+            capacity,
           ],
         });
         setMessage("Deployment sent:  " + hash);
@@ -99,7 +92,8 @@ export function DeployEvent({
     <section className="panel padded chain-console">
       <h3>Create event contract</h3>
       <p>
-        This Mera account becomes the organizer. Deployment needs gas; prize funding comes later.
+        This Mera account becomes the organizer. Deployment needs gas; prize
+        funding comes later.
       </p>
       <form onSubmit={deploy}>
         <label>
@@ -118,13 +112,27 @@ export function DeployEvent({
             End <input name="end" type="datetime-local" required />
           </label>
         </div>
+        <label>
+          Seats (later registrations join the waitlist)
+          <input
+            name="capacity"
+            type="number"
+            min={1}
+            step={1}
+            defaultValue={50}
+            required
+          />
+        </label>
         <p>
-          Appeal: 24 hours. Voting window: next 24 hours. Final refund: 5 days after end.
+          Appeal: 24 hours. Voting window: next 24 hours. Final refund: 5 days
+          after end.
         </p>
         <label className="checkbox-label">
           <input type="checkbox" required />
           <span>
-            I confirm creating a contract on Monad testnet with a 10,000 MON prize, 1,000 MON stake, and the dates above.
+            I confirm creating a contract on Monad testnet with a 10,000 MON
+            prize, 1,000 MON stake, 100 MON attendance deposit, the seat limit
+            and the dates above.
           </span>
         </label>
         <button className="button primary" disabled={busy}>

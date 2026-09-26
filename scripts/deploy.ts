@@ -30,6 +30,8 @@ const appeal = BigInt(process.env.APPEAL_SECONDS || 86400);
 const deadline = BigInt(
   process.env.EVENT_DEADLINE || Number(end) + Number(appeal) * 5,
 );
+const capacity = BigInt(process.env.EVENT_CAPACITY || 50);
+if (capacity <= 0n) throw new Error("EVENT_CAPACITY must be positive.");
 const account = privateKeyToAccount(key),
   transport = http(
     process.env.MONAD_RPC_URL || "https://testnet-rpc.monad.xyz",
@@ -53,6 +55,7 @@ const hash = await wallet.deployContract({
     deadline,
     appeal,
     rulesHash,
+    capacity,
   ],
 });
 const receipt = await publicClient.waitForTransactionReceipt({ hash });
@@ -65,6 +68,7 @@ const result = {
   end: String(end),
   deadline: String(deadline),
   appeal: String(appeal),
+  capacity: String(capacity),
   rulesHash,
 };
 writeFileSync("artifacts/deployment.json", JSON.stringify(result, null, 2));

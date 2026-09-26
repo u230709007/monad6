@@ -4,19 +4,43 @@ import {
   createSecp256k1SigningSession,
 } from "@category-labs/mera";
 import { toViemAccount } from "@category-labs/mera/viem";
+import { isMeraError } from "@category-labs/mera";
 import {
   createPublicClient,
   createWalletClient,
   http,
   parseEther,
   type Address,
+  type LocalAccount,
 } from "viem";
 import { monadTestnet } from "viem/chains";
 import { abi } from "./escrow-abi";
 
+/** Wallet client for a passkey-derived Mera account. */
+export function walletClientFor(account: LocalAccount) {
+  return createWalletClient({
+    account,
+    chain: monadTestnet,
+    transport: http(
+      import.meta.env.VITE_MONAD_RPC_URL ||
+        monadTestnet.rpcUrls.default.http[0],
+    ),
+  });
+}
+
+export function friendlyError(e: unknown) {
+  if (isMeraError(e)) {
+    if (e.code === "PRF_UNAVAILABLE")
+      return "This browser/authenticator does not support passkey PRF (common with Windows Hello). Use a phone or security-key passkey.";
+    if (e.code === "PASSKEY_OPERATION_FAILED")
+      return "Passkey step was cancelled or is unavailable on this device.";
+  }
+  return e instanceof Error ? e.message : "Something went wrong.";
+}
+
 export async function withMera<T>(
   create: boolean,
-  action: (account: ReturnType<typeof toViemAccount>) => Promise<T>,
+  action: (account: LocalAccount) => Promise<T>,
 ): Promise<T> {
   const result = create
     ? await createPasskeyWithPrfOutput({
@@ -41,7 +65,7 @@ export const publicClient = createPublicClient({
   ),
 });
 export async function escrowAction(
-  action: "join" | "claim",
+  action: "join" | "claim" | "withdrawRegistration",
   expectedAddress: string,
   contract: Address,
 ) {
@@ -50,14 +74,7 @@ export async function escrowAction(
       throw new Error("Select the passkey you signed in with.");
     if ((await publicClient.getChainId()) !== monadTestnet.id)
       throw new Error("Waiting for Monad testnet connection.");
-    const client = createWalletClient({
-      account,
-      chain: monadTestnet,
-      transport: http(
-        import.meta.env.VITE_MONAD_RPC_URL ||
-          monadTestnet.rpcUrls.default.http[0],
-      ),
-    });
+    const client = walletClientFor(account);
     const hash =
       action === "join"
         ? await client.writeContract(
@@ -67,7 +84,8 @@ export async function escrowAction(
                 address: contract,
                 abi,
                 functionName: "join",
-                value: parseEther("1000"),
+                // 1,000 MON stake + 100 MON attendance deposit.
+                value: parseEther("1100"),
               })
             ).request,
           )
@@ -77,7 +95,7 @@ export async function escrowAction(
                 account,
                 address: contract,
                 abi,
-                functionName: "claim",
+                functionName: action,
               })
             ).request,
           );

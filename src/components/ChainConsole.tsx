@@ -1,7 +1,5 @@
 import { useState } from "react";
 import {
-  createWalletClient,
-  http,
   isAddress,
   keccak256,
   toBytes,
@@ -10,10 +8,11 @@ import {
   type Address,
   type Hex,
 } from "viem";
-import { monadTestnet } from "viem/chains";
-import { withMera, publicClient } from "../lib/mera";
+import { withMera, publicClient, walletClientFor } from "../lib/mera";
 const chainAbi = parseAbi([
   "function fundPrize() payable",
+  "function checkIn(address[] people)",
+  "function forfeit(address participant)",
   "function openCase(address participant,bytes32 evidence)",
   "function appeal(bytes32 evidence)",
   "function voteSlash(address participant)",
@@ -24,6 +23,8 @@ const chainAbi = parseAbi([
 ]);
 type Action =
   | "fundPrize"
+  | "checkIn"
+  | "forfeit"
   | "openCase"
   | "appeal"
   | "voteSlash"
@@ -44,11 +45,14 @@ export function ChainConsole({
     [participant, setParticipant] = useState(""),
     [evidence, setEvidence] = useState(""),
     [awards, setAwards] = useState(""),
+    [attendees, setAttendees] = useState(""),
     [busy, setBusy] = useState(false),
     [message, setMessage] = useState(""),
     [approved, setApproved] = useState(false);
   const labels: Record<Action, string> = {
     fundPrize: "Fund prize pool with 10,000 MON",
+    checkIn: "Check in attendees (organizer, during event)",
+    forfeit: "Forfeit a no-show's 100 MON deposit",
     openCase: "Open a case with evidence (jury)",
     appeal: "Appeal on-chain",
     voteSlash: "Vote to slash 1,000 MON (jury)",
@@ -72,18 +76,11 @@ export function ChainConsole({
           throw new Error("Select the passkey you signed in with.");
         if ((await publicClient.getChainId()) !== 10143)
           throw new Error("Only Monad testnet is supported.");
-        const client = createWalletClient({
-          account,
-          chain: monadTestnet,
-          transport: http(
-            import.meta.env.VITE_MONAD_RPC_URL ||
-              "https://testnet-rpc.monad.xyz",
-          ),
-        });
+        const client = walletClientFor(account);
         const base = { account, address: contract, abi: chainAbi };
         const target = participant.trim();
         if (
-          ["openCase", "voteSlash", "resolve"].includes(action) &&
+          ["openCase", "voteSlash", "resolve", "forfeit"].includes(action) &&
           !isAddress(target)
         )
           throw new Error("Enter a valid participant address.");
@@ -124,7 +121,31 @@ export function ChainConsole({
               })
             ).request,
           );
-        else if (action === "voteSlash" || action === "resolve")
+        else if (action === "checkIn") {
+          const people = attendees
+            .split(/[\s,]+/)
+            .map((s) => s.trim())
+            .filter(Boolean);
+          if (!people.length || !people.every((a) => isAddress(a)))
+            throw new Error("Enter one or more valid attendee addresses.");
+          if (
+            new Set(people.map((a) => a.toLowerCase())).size !== people.length
+          )
+            throw new Error("List each address only once.");
+          hash = await client.writeContract(
+            (
+              await publicClient.simulateContract({
+                ...base,
+                functionName: "checkIn",
+                args: [people as Address[]],
+              })
+            ).request,
+          );
+        } else if (
+          action === "voteSlash" ||
+          action === "resolve" ||
+          action === "forfeit"
+        )
           hash = await client.writeContract(
             (
               await publicClient.simulateContract({
@@ -191,10 +212,12 @@ export function ChainConsole({
       <div className="eyebrow">MONAD TESTNET</div>
       <h3>Contract actions</h3>
       <p>
-        Permissions and deadlines are enforced by the contract. AI reports cannot trigger these actions.
+        Permissions and deadlines are enforced by the contract. AI reports
+        cannot trigger these actions.
       </p>
       <label>
-        Action <select
+        Action{" "}
+        <select
           value={action}
           onChange={(e) => {
             setAction(e.target.value as Action);
@@ -208,7 +231,7 @@ export function ChainConsole({
           ))}
         </select>
       </label>
-      {["openCase", "voteSlash", "resolve"].includes(action) && (
+      {["openCase", "voteSlash", "resolve", "forfeit"].includes(action) && (
         <label>
           Participant address
           <input
@@ -219,6 +242,24 @@ export function ChainConsole({
             }}
             placeholder="0x…"
           />
+        </label>
+      )}
+      {action === "checkIn" && (
+        <label>
+          Attendee addresses
+          <textarea
+            value={attendees}
+            onChange={(e) => {
+              setAttendees(e.target.value);
+              setApproved(false);
+            }}
+            placeholder="0x…&#10;0x…"
+          />
+          <small>
+            Only seat holders present at the venue. Checked-in participants can
+            claim their deposit right away; everyone else forfeits it after the
+            event and cannot win prizes.
+          </small>
         </label>
       )}
       {["openCase", "appeal"].includes(action) && (
@@ -232,7 +273,8 @@ export function ChainConsole({
             }}
           />
           <small>
-            The keccak256 hash of the text is written on-chain. Submit the file itself to the jury separately.
+            The keccak256 hash of the text is written on-chain. Submit the file
+            itself to the jury separately.
           </small>
         </label>
       )}

@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 360 96" role="img" aria-label="BuildProof">
+  <rect width="360" height="96" rx="20" fill="#09090d"/>
+  <g transform="translate(16 16)">
+    <rect width="64" height="64" rx="16" fill="#eaa14d"/>
+    <path d="M13 32 27 46 50 19" fill="none" stroke="#09090d" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="13" cy="32" r="5.5" fill="#eaa14d" stroke="#09090d" stroke-width="3.5"/>
+    <circle cx="27" cy="46" r="5.5" fill="#eaa14d" stroke="#09090d" stroke-width="3.5"/>
+    <circle cx="50" cy="19" r="7" fill="#09090d"/>
+  </g>
+  <text x="96" y="62" font-family="'Space Grotesk', 'DM Sans', Arial, sans-serif" font-size="40" font-weight="700" letter-spacing="-1.5" fill="#ffffff">Build<tspan fill="#eaa14d">Proof</tspan></text>
+</svg>

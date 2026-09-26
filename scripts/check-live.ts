@@ -59,6 +59,20 @@ try {
   bad("MONAD_RPC_URL is unreachable");
 }
 
+section("AI (Gemini)");
+if (!env("GEMINI_API_KEY")) warn("GEMINI_API_KEY empty: Gemini provider disabled");
+else {
+  try {
+    const r = await fetch(
+      `${env("GEMINI_URL") || "https://generativelanguage.googleapis.com/v1beta/openai"}/models`,
+      { headers: { authorization: `Bearer ${env("GEMINI_API_KEY")}` }, signal: timeout() },
+    );
+    r.ok ? ok(`Gemini key accepted (model ${env("GEMINI_MODEL") || "gemini-2.5-flash"})`) : bad(`Gemini rejected the key (HTTP ${r.status})`);
+  } catch {
+    bad("Gemini is unreachable");
+  }
+}
+
 section("AI agent wallet (SiloRail)");
 const agentKey = env("AGENT_PRIVATE_KEY");
 if (!isKey(agentKey)) bad("AGENT_PRIVATE_KEY missing or not a 0x + 64 hex key");

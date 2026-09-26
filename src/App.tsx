@@ -36,6 +36,7 @@ import { ExactEvmScheme } from "@x402/evm/exact/client";
 
 type Config = {
   demo: boolean;
+  demoLogin: boolean;
   contract: Address | null;
   stake: string;
   deposit: string;
@@ -130,6 +131,8 @@ export default function App() {
       spentMicro: number;
       remainingMicro: number;
     }>();
+  // Demo accounts get no chain transactions or x402 payments, even on a live server.
+  const demoMode = !!config?.demo || !!user?.address.startsWith("demo");
   async function api(path: string, body?: unknown, auth = token) {
     const r = await fetch("/api" + path, {
       method: body === undefined ? "GET" : "POST",
@@ -228,7 +231,7 @@ export default function App() {
           .then((b) => setWalletMon(formatEther(b)))
           .catch((e) => setNotice(e.message));
       else setWalletMon("0");
-      if (config.demo) {
+      if (demoMode) {
         setBalances({
           stake: user.joined ? "1000" : "0",
           deposit: user.joined ? "100" : "0",
@@ -330,7 +333,7 @@ export default function App() {
         setPage("project");
         throw new Error("Save your team and project before joining.");
       }
-      if (!config?.demo) {
+      if (!demoMode) {
         if (!config?.contract)
           throw new Error("Contract address not configured.");
         const alreadyJoined = await publicClient.readContract({
@@ -345,7 +348,7 @@ export default function App() {
       const result = await api("/join", {});
       await refresh();
       setNotice(
-        config?.demo
+        demoMode
           ? "Demo join recorded. No real MON locked."
           : result.waitlisted
             ? "The event is full, so you are on the waitlist. You get a seat automatically when someone withdraws before the start; otherwise everything is refunded."
@@ -361,8 +364,7 @@ export default function App() {
     }
     await run("Thinking", async () => {
       let result;
-      if (config?.demo)
-        result = await api("/chat", { prompt, after: chatFrom });
+      if (demoMode) result = await api("/chat", { prompt, after: chatFrom });
       else {
         if (!config) throw new Error("Loading config.");
         result = await withMera(false, async (account) => {
@@ -419,6 +421,10 @@ export default function App() {
   return (
     <div className="app-shell">
       <aside className="sidebar">
+        <a className="brand" href="/">
+          <img className="brand-mark" src="/logo-mark.svg" alt="" />
+          Build<span className="brand-dot">Proof</span>
+        </a>
         <div className="sidebar-label">HACKATHON WORKSPACE</div>
         <nav>
           {nav
@@ -490,8 +496,17 @@ export default function App() {
           </div>
           <div className="top-actions">
             <span className="mode-badge">
-              {!config ? "CONNECTING" : config.demo ? "DEMO" : "MONAD TESTNET"}
+              {!config ? "CONNECTING" : demoMode ? "DEMO" : "MONAD TESTNET"}
             </span>
+            {config?.demoLogin && !user && (
+              <button
+                className="button small secondary"
+                disabled={!!busy}
+                onClick={() => signIn("demo")}
+              >
+                Try demo
+              </button>
+            )}
             <button
               className="button small secondary"
               onClick={() => setLogin(true)}
@@ -527,8 +542,8 @@ export default function App() {
               <section className="event-card">
                 <div className="event-content">
                   <span className="pill">
-                    {config?.demo ? "DEMO EVENT" : "TESTNET EVENT"}{" "}
-                    <span>•</span> BUILDPROOF
+                    {demoMode ? "DEMO EVENT" : "TESTNET EVENT"} <span>•</span>{" "}
+                    BUILDPROOF
                   </span>
                   <h2>
                     Monad
@@ -571,7 +586,7 @@ export default function App() {
                   </strong>
                   <div className="prize-foot">
                     <LockKeyhole size={14} />
-                    {config?.demo
+                    {demoMode
                       ? "Demo amount · no real funds"
                       : "Pre-funded prize contract"}
                   </div>
@@ -735,7 +750,7 @@ export default function App() {
                       </button>
                       <span className="pill neutral">
                         {(config?.provider || "AI").toUpperCase()}
-                        {config?.demo ? "" : " · x402"}
+                        {demoMode ? "" : " · x402"}
                       </span>
                     </div>
                   </div>
@@ -844,7 +859,7 @@ export default function App() {
                     />
                     <div>
                       <small>
-                        {config?.demo
+                        {demoMode
                           ? "Demo · no payment"
                           : `Call limit: ${config?.price} token units · passkey approval`}
                       </small>
@@ -1033,8 +1048,8 @@ export default function App() {
                 <h3>Open source & AI credit</h3>
                 <p>
                   You never need an API key: AI calls are paid by the project,
-                  not by you. Monad's Open Source Track (MOST) grants AI
-                  credits to public projects. Want to open source this one?
+                  not by you. Monad's Open Source Track (MOST) grants AI credits
+                  to public projects. Want to open source this one?
                 </p>
                 {credit?.openSource ? (
                   <p>
@@ -1093,9 +1108,7 @@ export default function App() {
                   value="10,000"
                   suffix="MON"
                   icon={Wallet}
-                  detail={
-                    config?.demo ? "Demo event" : "Contract funding required"
-                  }
+                  detail={demoMode ? "Demo event" : "Contract funding required"}
                 />
                 <Stat
                   label="Wallet balance"
@@ -1114,7 +1127,7 @@ export default function App() {
                   suffix="MON"
                   icon={LockKeyhole}
                   detail={
-                    config?.demo
+                    demoMode
                       ? "Demo balance · not real assets"
                       : "Monad testnet contract balance"
                   }
@@ -1225,7 +1238,7 @@ export default function App() {
                       disabled={!!busy || !user}
                       onClick={() =>
                         run("Checking refund", async () => {
-                          if (config?.demo)
+                          if (demoMode)
                             throw new Error(
                               "Demo event in progress. No real funds to withdraw.",
                             );
@@ -1329,7 +1342,7 @@ export default function App() {
               ) : (
                 <>
                   <div className="notice">
-                    {config?.demo ? "Demo jury view.  " : ""}AI analysis never
+                    {demoMode ? "Demo jury view.  " : ""}AI analysis never
                     penalizes automatically. On-chain decisions require juror
                     signatures.
                   </div>
@@ -1487,11 +1500,11 @@ export default function App() {
             <ChainConsole
               address={user.address}
               contract={config.contract}
-              demo={config.demo}
+              demo={demoMode}
             />
           )}
           {page === "funds" && user && config && !config.contract && (
-            <DeployEvent address={user.address} demo={config.demo} />
+            <DeployEvent address={user.address} demo={demoMode} />
           )}
           <footer>
             <span>
@@ -1530,7 +1543,7 @@ export default function App() {
             >
               Use existing passkey
             </button>
-            {config?.demo && (
+            {config?.demoLogin && (
               <button
                 className="text-button"
                 disabled={!!busy}

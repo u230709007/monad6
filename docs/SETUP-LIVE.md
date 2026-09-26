@@ -28,7 +28,11 @@ Organizatör, jüri ve her katılımcı hesabında gas gerekir. Katılım için 
 2. Organizatör adresini yapıştırıp MON isteyin.
 3. Kontrol: `npm run check:live` deployer bakiyesini gösterir (`DEPLOYER_PRIVATE_KEY` doluysa).
 
-## 3. AI: SiloRail
+## 3. AI: Gemini (varsayılan) ve SiloRail
+
+**Gemini:** https://aistudio.google.com/apikey adresinden anahtar alıp `.env` içine `GEMINI_API_KEY=...` yazın. Doluysa varsayılan sağlayıcı Gemini olur (`GEMINI_MODEL`, varsayılan `gemini-2.5-flash`). SiloRail'e geçmek için `AI_PROVIDER=silorail` yazın.
+
+**SiloRail:**
 
 1. `.env` içine `AGENT_PRIVATE_KEY=0x...` yazın.
 2. `SILORAIL_MODEL` varsayılan olarak `:free` modeldir ve ücretsizdir. Ücretli model istiyorsanız ajan adresine testnet USDC (`0x534b2f3A21130d7a60830c2Df862319e593943A3`) gönderin.
